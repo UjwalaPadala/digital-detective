@@ -21,7 +21,7 @@ The system uses an ETL pipeline to load security events, SQL rules to flag activ
 - **Database:** PostgreSQL
 - **Data processing:** Python CSV module
 - **Database connectivity:** psycopg2
-- **Analysis:** SQL
+- **Analysis:** SQL, Pandas
 - **Version control:** Git and GitHub
 
 ## System Architecture
