@@ -5,6 +5,8 @@ from pathlib import Path
 
 import psycopg2
 
+from log_utils import normalize_log_row, validate_columns
+
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 CSV_FILE = PROJECT_DIR / "data" / "security_logs.csv"
@@ -32,12 +34,10 @@ def main():
 
         with connection:
             with connection.cursor() as cursor:
-                # Record the start of this pipeline run.
                 cursor.execute(
                     """
                     INSERT INTO etl_audit_log (
-                        pipeline_name,
-                        run_status
+                        pipeline_name, run_status
                     )
                     VALUES (%s, %s)
                     RETURNING run_id;
@@ -46,41 +46,14 @@ def main():
                 )
                 run_id = cursor.fetchone()[0]
 
-                # Read and load CSV records.
                 with CSV_FILE.open(
                     "r", newline="", encoding="utf-8"
                 ) as file:
                     reader = csv.DictReader(file)
-
-                    required_columns = {
-                        "event_time",
-                        "user_id",
-                        "event_type",
-                        "ip_address",
-                        "country",
-                        "resource_accessed",
-                        "data_volume_mb",
-                        "status",
-                    }
-
-                    if not required_columns.issubset(
-                        reader.fieldnames or []
-                    ):
-                        raise ValueError(
-                            "CSV is missing one or more required columns."
-                        )
+                    validate_columns(reader.fieldnames)
 
                     for row in reader:
-                        values = (
-                            row["event_time"],
-                            row["user_id"],
-                            row["event_type"],
-                            row["ip_address"] or None,
-                            row["country"] or None,
-                            row["resource_accessed"] or None,
-                            row["data_volume_mb"] or None,
-                            row["status"] or None,
-                        )
+                        values = normalize_log_row(row)
 
                         cursor.execute(
                             """
@@ -89,16 +62,11 @@ def main():
                             WHERE event_time = %s
                               AND user_id = %s
                               AND event_type = %s
-                              AND ip_address
-                                  IS NOT DISTINCT FROM %s
-                              AND country
-                                  IS NOT DISTINCT FROM %s
-                              AND resource_accessed
-                                  IS NOT DISTINCT FROM %s
-                              AND data_volume_mb
-                                  IS NOT DISTINCT FROM %s
-                              AND status
-                                  IS NOT DISTINCT FROM %s
+                              AND ip_address IS NOT DISTINCT FROM %s
+                              AND country IS NOT DISTINCT FROM %s
+                              AND resource_accessed IS NOT DISTINCT FROM %s
+                              AND data_volume_mb IS NOT DISTINCT FROM %s
+                              AND status IS NOT DISTINCT FROM %s
                             LIMIT 1;
                             """,
                             values,
@@ -111,14 +79,9 @@ def main():
                         cursor.execute(
                             """
                             INSERT INTO raw_security_logs (
-                                event_time,
-                                user_id,
-                                event_type,
-                                ip_address,
-                                country,
-                                resource_accessed,
-                                data_volume_mb,
-                                status
+                                event_time, user_id, event_type,
+                                ip_address, country, resource_accessed,
+                                data_volume_mb, status
                             )
                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
                             """,
@@ -131,17 +94,16 @@ def main():
                 )
                 total_logs = cursor.fetchone()[0]
 
-                # Mark this run as successful.
                 cursor.execute(
                     """
                     UPDATE etl_audit_log
                     SET finished_at = CURRENT_TIMESTAMP,
                         records_inserted = %s,
                         records_skipped = %s,
-                        run_status = %s
+                        run_status = 'SUCCESS'
                     WHERE run_id = %s;
                     """,
-                    (inserted, skipped, "SUCCESS", run_id),
+                    (inserted, skipped, run_id),
                 )
 
         print("\nETL load completed successfully!")
@@ -159,31 +121,31 @@ def main():
     ) as error:
         print(f"Pipeline failed: {error}")
 
-        # Save a failure record when possible.
-        # Roll back first in case the main transaction failed.
-        if connection is not None and run_id is not None:
+        if connection is not None:
             try:
                 connection.rollback()
+
+                # Save failure details in a separate transaction.
                 with connection:
                     with connection.cursor() as cursor:
-                        cursor.execute(
-                            """
-                            UPDATE etl_audit_log
-                            SET finished_at = CURRENT_TIMESTAMP,
-                                records_inserted = %s,
-                                records_skipped = %s,
-                                run_status = %s,
-                                error_message = %s
-                            WHERE run_id = %s;
-                            """,
-                            (
-                                inserted,
-                                skipped,
-                                "FAILED",
-                                str(error)[:2000],
-                                run_id,
-                            ),
-                        )
+                        if run_id is not None:
+                            cursor.execute(
+                                """
+                                UPDATE etl_audit_log
+                                SET finished_at = CURRENT_TIMESTAMP,
+                                    records_inserted = %s,
+                                    records_skipped = %s,
+                                    run_status = 'FAILED',
+                                    error_message = %s
+                                WHERE run_id = %s;
+                                """,
+                                (
+                                    inserted,
+                                    skipped,
+                                    str(error)[:2000],
+                                    run_id,
+                                ),
+                            )
             except psycopg2.Error as audit_error:
                 print(f"Could not save failure audit: {audit_error}")
 
