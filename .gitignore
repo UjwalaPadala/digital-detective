@@ -1,0 +1,23 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets and local environment settings
+.env
+.env.*
+!.env.example
+
+# Generated or local data
+data/*.csv
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
